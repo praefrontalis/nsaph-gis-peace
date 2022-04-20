@@ -1,0 +1,2 @@
+Observational shapes were firstly downloaded from https://satepsanone.nesdis.noaa.gov/pub/FIRE/web/HMS/Smoke_Polygons/Shapefile/ (in the beginning of April)  
+After that all shapes from 2021 and 2022 were put together via geo_concatenation.py and 300 rows were randomly sub-sampled via geo_random_subsample.py
