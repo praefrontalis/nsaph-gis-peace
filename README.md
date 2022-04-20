@@ -74,7 +74,7 @@ Output options:
 ```
 ## Script launching example
 ```
-python --obs-shp data_examples/observation_shape_sample/shapefile_21_22.sub.shp \
+python aggregator.py --obs-shp data_examples/observation_shape_sample/shapefile_21_22.sub.shp \
     --geo-shp data_examples/geography_shape/cb_2018_us_county_500k/cb_2018_us_county_500k.shp \
     --geo-id COUNTYNS \
     --geo-add NAME \
