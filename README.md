@@ -38,11 +38,14 @@ The same things about time aggregation as for AVG_AREA_WEIGHTED method are relev
 ```
 usage: aggregator.py [-h] [--geo-shp GEO_SHP] [--geo-id GEO_ID]
                      [--geo-add GEO_ADD [GEO_ADD ...]] [--obs-shp OBS_SHP]
-                     [--obs-id OBS_ID [OBS_ID ...]] [--agg-type AGG_TYPE]
-                     [--epsg EPSG] [--time-agg TIME_AGG]
+                     [--obs-ids OBS_IDS [OBS_IDS ...]]
+                     [--agg-type {MAX,AVG_AREA_WEIGHTED,AVG_MONTE_CARLO}]
+                     [--epsg EPSG] [--n N] [--max-error MAX_ERROR]
+                     [--time-agg {DAILY,MONTHLY,ANNUAL}]
                      [--time-start-id TIME_START_ID]
                      [--time-end-id TIME_END_ID]
                      [--time-id-format TIME_ID_FORMAT] [--out-csv OUT_CSV]
+                     [--log-level {CRITICAL,FATAL,ERROR,WARN,WARNING,INFO,DEBUG,NOTSET}]
 
 Spatial data aggregation. Attention! In this code some technical columns are
 added to datasets with names starting from "aggregator_". Do not use such
@@ -52,48 +55,69 @@ options:
   -h, --help            show this help message and exit
 
 Geographical shape file:
-  --geo-shp GEO_SHP     Path to geographical .shp file
+  --geo-shp GEO_SHP     Path to geographical .shp file (default: None)
   --geo-id GEO_ID       The name of the identifier column of the geographic
-                        region
+                        region (default: None)
   --geo-add GEO_ADD [GEO_ADD ...]
                         A set of additional columns (fields, annotations) from
-                        geographic shapes to include in the result
+                        geographic shapes to include in the result (default:
+                        None)
 
 Observational shape file:
-  --obs-shp OBS_SHP     Path to observational .shp file
-  --obs-id OBS_ID [OBS_ID ...]
+  --obs-shp OBS_SHP     Path to observational .shp file (default: None)
+  --obs-ids OBS_IDS [OBS_IDS ...]
                         The name(s) of the value column for observational
-                        shapes
+                        shapes (default: None)
 
 Aggregation parameters:
-  --agg-type AGG_TYPE [Default: 5070]   Aggregation type: MAX|AVG_AREA_WEIGHTED
-  --epsg EPSG           Which EPSG to use when counting area
+  --agg-type {MAX,AVG_AREA_WEIGHTED,AVG_MONTE_CARLO}
+                        Aggregation type (default: None)
+  --epsg EPSG           Which EPSG to use when counting area (default: 5070)
+  --n N                 Number of subsamples for error estimation of MC
+                        approximation (default: 500)
+  --max-error MAX_ERROR
+                        Max estimated relative error of MC approximation
+                        (default: None)
 
 Time aggregation parameters:
-  --time-agg TIME_AGG   Time aggregation type if required:
-                        DAILY|MONTHLY|ANNUAL
-  --time-start-id TIME_START_ID [Default: Start]
+  --time-agg {DAILY,MONTHLY,ANNUAL}
+                        Time aggregation type if required (default: None)
+  --time-start-id TIME_START_ID
                         The name of the datetime column of observation start
-                        (for time aggregation)
-  --time-end-id TIME_END_ID [Default: End]
+                        (for time aggregation) (default: Start)
+  --time-end-id TIME_END_ID
                         The name of the datetime column of observation end
-                        (for time aggregation)
-  --time-id-format TIME_ID_FORMAT [Default: %Y%j %H%M]
+                        (for time aggregation) (default: End)
+  --time-id-format TIME_ID_FORMAT
                         The datetime format string of columns 'time-start-id'
                         and 'time-end-id' (to parse with datetime.strptime)
+                        (default: %Y%j %H%M)
 
 Output options:
-  --out-csv OUT_CSV     Path to output aggregated data .csv
+  --out-csv OUT_CSV     Path to output aggregated data .csv (default: None)
+
+Logging options:
+  --log-level {CRITICAL,FATAL,ERROR,WARN,WARNING,INFO,DEBUG,NOTSET}
+                        Logging level (default: INFO)
 ```
 ## Script launching example
 ```
-python aggregator.py --obs-shp data_examples/observation_shape_sample/shapefile_21_22.sub.shp \
-    --geo-shp data_examples/geography_shape/cb_2018_us_county_500k/cb_2018_us_county_500k.shp \
-    --geo-id COUNTYNS \
-    --geo-add NAME \
-    --agg-type AVG_AREA_WEIGHTED \
-    --time-agg ANNUAL \
-    --obs-id Density \
-    --out-csv hms_smoke_21_12_annual_by_cb_2018_us_county_500k.csv
+python aggregator.py
+    --obs-shp data_examples/observation_shape_sample/shapefile_21_22.sub.shp
+    --geo-shp data_examples/geography_shape/cb_2018_us_county_500k/cb_2018_us_county_500k.shp
+    --geo-id COUNTYNS
+    --geo-add NAME
+    --agg-type AVG_AREA_WEIGHTED
+    --time-agg DAILY
+    --obs-id Density
+    --out-csv hms_smoke20220401_cb_2018_us_county_500k.csv
+    --log-level INFO
 ```
 ## AVG_AREA_WEIGHTED VS MONTE_CARLO speed
+The problem is that the implemented Monte-Carlo averaging method did not speed up the calculation but did just the opposite.
+As profiling showed slowdown was mostly because of random points generating function, it is too slow.
+You can see on the picture below the example of performance test which was run on subsample from data_examples, 
+here the Monte-Carlo averaging is hundreds times slower, and the speed is approximately linearly decreasing 
+with the number of points considered:
+
+![plot](./performance_test.png)

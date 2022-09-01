@@ -57,7 +57,8 @@ def run_performance_test(
             else:
                 ax.plot(n, time_elapsed, "o", color=colors[method])
     ax.legend()
-
+    ax.set_xlabel("Number of points")
+    ax.set_ylabel("time elapsed (seconds)")
     # plt.show()
     plt.savefig("performance_test.png")
 
