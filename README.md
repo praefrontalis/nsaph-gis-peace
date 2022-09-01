@@ -24,7 +24,7 @@ averaged by area that event occupied is returned (without weighting by fraction 
 If time aggregation type is specified then every observation in obs-shp file is preliminarily annotated with period of data 
 during which this event occurred, and resulting value for every area in geo-shp is additionally weighted by 
 fraction of time period during which the event occurred. 
-#### MONTE_CARLO
+#### AVG_MONTE_CARLO
 To speed up averaging this additional type of aggregation was implemented, and it is so, that the area 
 of the event is estimated by counting the fraction of randomly chosen points that get into every area of interest.  
 There are several possibilities to deal with the error of approximation:
