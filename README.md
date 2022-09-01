@@ -6,20 +6,33 @@
 > <cite>[Michael Bouzinier]</cite>
 
 ## Types of aggregation
-Two possible types of aggregation are implemented which are called "MAX" and "AVG_AREA_WEIGHTED". 
-Also, there is an additional option of aggregation over time (by year, by month or by day).  
-Here is an explanation how the aggregation works with time option.
+Two different aggregation functions are implemented: maximum and average. 
+To use maximum aggregation you should provide --agg-type MAX parameter to script.
+Average function is implemented in two different options --agg-type MONTE_CARLO and --agg-type AVG_AREA_WEIGHTED.
+
+Also, there is an additional option --time-agg of aggregation over time (by year, by month or by day).  
+Here is an explanation how the aggregation works with and without time option.
 ### MAX
 If no time aggregation type is specified maximum value of obs-id column from obs-shp is returned for every area in geo-shp file.  
 If time aggregation type is specified then every observation in obs-shp file is preliminarily annotated with period of data 
 during which this event occurred. And then for every area in geo-shp file and every period of time observed maximum value 
 of obs-id column from obs-shp is returned. 
-### AVG_AREA_WEIGHTED
+### Average
+#### AVG_AREA_WEIGHTED
 If no time aggregation type is specified for every area in geo-shp file value of obs-id column from obs-shp file 
 averaged by area that event occupied is returned (without weighting by fraction of time period occupation).  
 If time aggregation type is specified then every observation in obs-shp file is preliminarily annotated with period of data 
 during which this event occurred, and resulting value for every area in geo-shp is additionally weighted by 
 fraction of time period during which the event occurred. 
+#### MONTE_CARLO
+To speed up averaging this additional type of aggregation was implemented, and it is so, that the area 
+of the event is estimated by counting the fraction of randomly chosen points that get into every area of interest.  
+There are several possibilities to deal with the error of approximation:
+1) if the max-error parameter is provided, the points will be sampled until the necessary relative error will be achieved, but it can took a lot of time to reach the result
+2) if the number of points is specified, just that number of points will be randomly sampled and the error will be estimated 
+In both cases the column with estimated std will be provided with the result.
+The same things about time aggregation as for AVG_AREA_WEIGHTED method are relevant 
+(so the time aggregation is implemented not via Monte-Carlo approximation but just via weighting)
 
 ## Script usage
 ```
@@ -83,3 +96,4 @@ python aggregator.py --obs-shp data_examples/observation_shape_sample/shapefile_
     --obs-id Density \
     --out-csv hms_smoke_21_12_annual_by_cb_2018_us_county_500k.csv
 ```
+## AVG_AREA_WEIGHTED VS MONTE_CARLO speed

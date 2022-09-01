@@ -1,5 +1,5 @@
 """
-Подготовить файл со всеми наблюдаемыми облаками
+Prepare file with all smokes observed
 """
 import argparse
 import glob

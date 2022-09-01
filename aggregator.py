@@ -1,10 +1,32 @@
 import argparse
+import datetime
 import logging
+import random
+import time
 from datetime import timedelta, datetime, date
 
 import colorlog
 import geopandas as gpd
+import numpy as np
 import pandas as pd
+from shapely.geometry import Point
+
+
+logger = logging.getLogger()
+
+# def random_date(begin: datetime, end: datetime):
+#     """
+#     https://stackoverflow.com/a/67151040/5005169
+#     :param begin:
+#     :param end:
+#     :return:
+#     """
+#     epoch = datetime(1970, 1, 1)
+#     begin_seconds = int((begin - epoch).total_seconds())
+#     end_seconds = int((end - epoch).total_seconds())
+#     dt_seconds = random.randint(begin_seconds, end_seconds)
+#
+#     return datetime.fromtimestamp(dt_seconds)
 
 
 intersection_col = "aggregator_intersection"
@@ -19,19 +41,141 @@ def aggregate_max(
         geo_adds: list,
         obs_ids: list
 ):
-    # aggregation functions: max for user defined for aggregation
+    # aggregation functions: max for user defined columns for aggregation
     aggregation_dict = {obs_id: "max" for obs_id in obs_ids}
-    # first for user defined for leaving
+    # and first for user defined columns to leave
     for geo_add in geo_adds:
         aggregation_dict[geo_add] = "first"
 
-    joined_df_aggregated = joined_df.groupby(
-        by=group_by_ids, as_index=False, sort=False).agg(func=aggregation_dict)
+    joined_df_aggregated = joined_df\
+        .groupby(by=group_by_ids, as_index=False, sort=False)\
+        .agg(func=aggregation_dict)
 
     return joined_df_aggregated
 
 
-def aggregate_avg_MC(obs_df, geo_df):
+def random_points_in_polygon(number, polygon, points):
+    """
+    :param number:
+    :param polygon:
+    :param points:
+    :return: list of shapely point
+    """
+    min_x, min_y, max_x, max_y = polygon.bounds
+    i = 0
+    points_by = 0
+    while i < number:
+        point = Point(random.uniform(min_x, max_x), random.uniform(min_y, max_y))
+        if polygon.contains(point):
+            points.append(point)  # TODO
+            i += 1
+        else:
+            points_by += 1
+    logger.debug(f"Points by: {points_by}/{number}")
+    return points
+
+
+# def sample_geoseries(geoseries, size, overestimate=2):
+#     polygon = geoseries.unary_union
+#     min_x, min_y, max_x, max_y = polygon.bounds
+#     ratio = polygon.area / polygon.envelope.area
+#     samples = np.random.uniform((min_x, min_y), (max_x, max_y), (int(size / ratio * overestimate), 2))
+#     multipoint = shapely.geometry.MultiPoint(samples)
+#     multipoint = multipoint.intersection(polygon)
+#     samples = np.array(multipoint)
+#     while samples.shape[0] < size:
+#         # emergency catch in case by bad luck we didn't get enough within the polygon
+#         samples = np.concatenate(
+#             [samples, sample_geoseries(polygon, size, overestimate=overestimate)])
+#     return samples[np.random.choice(len(samples), size)]
+
+
+def MC(grouped, obs_ids, geo_adds, n, max_error, time_agg, time_weight_col):
+    """
+    :param time_weight_col:
+    :param time_agg:
+    :param grouped:
+    :param obs_ids:
+    :param geo_adds:
+    :param n:
+    :param max_error:
+    :return:
+    """
+    # generate n points inside geo location
+    # count portion inside observational shapes
+    # look at obs_id values at these points
+    # count weighted by proportions average
+    # estimate standard error
+    # estimate standard error
+
+    # generate n points within the first county polygon in geodata
+    points_batch_num = n
+    points = []
+    if max_error is not None:
+        assert max_error > 0
+        error = max_error + 1
+    else:
+        error = None
+
+    values = np.array(len(obs_ids))
+    SE = np.array(len(obs_ids))
+    contains = np.zeros(len(grouped))
+
+    while max_error is None or error > max_error:
+        points = random_points_in_polygon(points_batch_num, grouped.iloc[0]["geometry"], points)
+
+        # only look at last batch points (previous we have already checked)
+        for point in points[-points_batch_num:]:
+            contains += grouped["obs_geometry"].contains(point)
+
+        # estimate values
+        p = contains / len(points)
+        values = grouped.loc[:, obs_ids].mul(p, axis=0)
+        if time_agg is not None:
+            values = values.mul(grouped[time_weight_col], axis=0)
+        values = values.sum(axis=0)
+
+        # estimate SE
+        # std/n**0.5
+        # ( p (1 - p) / n ) ** 0.5
+        SEs = (p * (1 - p) / len(points)) ** 0.5
+        # if p == 0 or p == 1, estimate SE 3 / n
+        SEs[(contains == 0) | (contains == len(points))] = 3 / len(points)
+
+        SEs = grouped.loc[:, obs_ids].mul(SEs, axis=0)
+        SE = (SEs ** 2).sum(axis=0) ** 0.5
+
+        if max_error is None:
+            break
+        else:
+            pseudo_values = values
+            pseudo_values[values == 0] = 1
+
+            deltas = SE / pseudo_values
+            error = deltas.max()
+
+    aggregated = {}
+    for obs_id in obs_ids:
+        aggregated[obs_id] = values[obs_id]
+        aggregated[f"{obs_id}_SE"] = SE[obs_id]
+
+    for i, geo_add in enumerate(geo_adds):
+        aggregated[geo_add] = grouped.iloc[0][geo_add]
+
+    return pd.Series(aggregated)
+
+
+def aggregate_avg_MC(
+        joined_df: gpd.GeoDataFrame,
+        obs_df: gpd.GeoDataFrame,
+        group_by_ids: list,
+        geo_adds: list,
+        obs_ids: list,
+        n: int,
+        max_error: float,
+        time_agg: str,
+        time_weight_col: str
+):
     """
     Using random sampling (Monte-Carlo).
     The idea is to generate points with random coordinates
@@ -43,26 +187,80 @@ def aggregate_avg_MC(obs_df, geo_df):
     otherwise assign 0.
     Then calculate mean value (e.g. mean density)
     for all points within a geographic shape.
-    :param obs_df:
-    :param geo_df:
-    :return:
+
+    To provide a confidence interval for the estimated area
+    we will count the Wilson score interval
+    for binomial proportion confidence interval for the given confidence level.
+
+    Args:
+        joined_df:
+        obs_df:
+        group_by_ids:
+        geo_adds:
+        obs_ids:
+        n: number of points to run estimation for
+        max_error: maximum relative error
+        time_agg: if to do aggregation over time
+        time_weight_col:
+
     """
-    raise NotImplementedError
+    obs_geometry = obs_df.loc[
+        joined_df["index_right"].values, "geometry"].reset_index()
+    joined_df["obs_geometry"] = obs_geometry["geometry"]
+
+    joined_df_aggregated = joined_df\
+        .groupby(by=group_by_ids, as_index=False, sort=False)\
+        .apply(lambda x: MC(x, obs_ids, geo_adds, n, max_error, time_agg, time_weight_col))
+
+    return joined_df_aggregated
 
 
 def add_intersect_area(joined_df, obs_df, epsg):
 
+    # -----------
+    start = time.time()
     joined_df = joined_df.to_crs(epsg=epsg)
+    end = time.time()
+
+    logger.info(
+        f"Conversion of joined df to crs epsg={epsg} took {(end-start)/60:.2f} min")
+    # -----------
+
+    # -----------
+    start = time.time()
     obs_df = obs_df.to_crs(epsg=epsg)
     obs_df.geometry = obs_df.geometry.buffer(0)
+    end = time.time()
+    logger.info(
+        f"Conversion of observational df to crs epsg={epsg} took {(end-start)/60:.2f} min")
+    # -----------
 
     joined_df_obs_geometry = obs_df.iloc[joined_df["index_right"]]
 
+    # -----------
+    start = time.time()
     joined_df[intersection_col] = \
         joined_df["geometry"].intersection(joined_df_obs_geometry, align=False)
+    end = time.time()
+    logger.info(
+        f"Intersecting of geometries took {(end - start) / 60:.2f} min")
+    # -----------
 
+    # -----------
+    start = time.time()
     joined_df[geo_area_col] = joined_df["geometry"].area
+    end = time.time()
+    logger.info(
+        f"Area of geoshape geometries counting took {(end - start) / 60:.2f} min")
+    # -----------
+
+    # -----------
+    start = time.time()
     joined_df[intersection_area_col] = joined_df[intersection_col].area
+    end = time.time()
+    logger.info(
+        f"Area of intersection of geometries counting took {(end - start) / 60:.2f} min")
+    # -----------
 
     joined_df[area_weight_col] = \
         joined_df[intersection_area_col] / joined_df[geo_area_col]
@@ -71,8 +269,14 @@ def add_intersect_area(joined_df, obs_df, epsg):
 
 
 def aggregate_avg_weighted(
-        joined_df, group_by_ids, geo_adds, obs_ids, obs_df, epsg,
-        time_agg, time_weight_col):
+        joined_df,
+        group_by_ids,
+        geo_adds,
+        obs_ids,
+        obs_df,
+        epsg,
+        time_agg,
+        time_weight_col):
     """
     Create a set of intersections between geographical
     and observational shapes.
@@ -106,16 +310,17 @@ def aggregate_avg_weighted(
     for geo_add in geo_adds:
         aggregation_dict[geo_add] = "first"
 
-    joined_df_aggregated = joined_df.groupby(
-        by=group_by_ids, as_index=False, sort=False).agg(func=aggregation_dict)
+    joined_df_aggregated = joined_df\
+        .groupby(by=group_by_ids, as_index=False, sort=False)\
+        .agg(func=aggregation_dict)
 
     return joined_df_aggregated
 
 
 def annotate_days(df, start_time_col, end_time_col, day_col, weight_col):
     """
-    Каждому обозреваемому событию сопоставить дни, в которые это событие наблюдалось,
-    и доли дней, в течение которых это событие наблюдалось
+    For each observed event match the days on which this event was observed,
+    and fraction of days during which this event was observed
     :param df:
     :param start_time_col:
     :param end_time_col:
@@ -187,8 +392,8 @@ def get_next_month(start_dt):
 
 def annotate_months(df, start_time_col, end_time_col, month_col, weight_col):
     """
-    Каждому обозреваемому событию сопоставить месяцы, в которые это событие наблюдалось,
-    и доли месяцев, в течение которых это событие наблюдалось
+    For each observed event match the months on which this event was observed,
+    and fraction of months during which this event was observed
     :param df:
     :param start_time_col:
     :param end_time_col:
@@ -253,8 +458,8 @@ def annotate_months(df, start_time_col, end_time_col, month_col, weight_col):
 
 def annotate_years(df, start_time_col, end_time_col, year_col, weight_col):
     """
-    Каждому обозреваемому событию сопоставить года, в которые это событие наблюдалось,
-    и доли лет, в течение которых это событие наблюдалось
+    For each observed event match the years on which this event was observed,
+    and fraction of years during which this event was observed
     :param df:
     :param start_time_col:
     :param end_time_col:
@@ -266,6 +471,9 @@ def annotate_years(df, start_time_col, end_time_col, year_col, weight_col):
 
     df[year_col] = 0
     df[weight_col] = 0
+    rows = len(df)
+
+    logger.info("...looking through dataframe row by row")
 
     for i, row in df.iterrows():
         years = []
@@ -310,7 +518,13 @@ def annotate_years(df, start_time_col, end_time_col, year_col, weight_col):
                 f"is larger then end dt '{end_dt.date()}' "
                 f"in row '{row}'")
 
+        print(f"...{i}/{rows}", end='\r')
+
+    print()
+
     dfs.append(df)
+
+    logger.info("...concatenating time annotated dataframes...")
     df = gpd.GeoDataFrame(pd.concat(dfs, ignore_index=True), crs=df.crs)
 
     return df
@@ -333,7 +547,7 @@ def fill_with_0(aggregated_df, geo_df, geo_id):
 
     geo_df_missing_rows[list(aggregated_df_columns_unique)] = 0
 
-    aggregated_df = aggregated_df.append(geo_df_missing_rows)
+    aggregated_df = pd.concat([aggregated_df, geo_df_missing_rows], axis=0)
 
     return aggregated_df
 
@@ -343,20 +557,17 @@ def aggregate(
         geo_id: str,
         geo_adds: list,
         obs_shp_fp: str,
-        obs_id: list,
+        obs_ids: list,
         agg_type: str,
         time_agg: str,
         time_start_id: str,
         time_end_id: str,
         time_id_format: str,
-        epsg: int
+        epsg: int,
+        n: int,
+        max_error: float
 ):
-    # df2 = df.drop(labels=range(101, 33144), axis=0)
-    # df2.to_file("cb_2017_us_zcta510_100.shp")
-
-    # epsg = 4269
-
-    geo_df = gpd.read_file(geo_shp_fp)  #.set_crs(obs_df.crs)
+    geo_df = gpd.read_file(geo_shp_fp)
 
     if (geo_df[geo_id].value_counts() > 1).any():
         non_unique_values = list((geo_df[geo_id].value_counts() > 1).index)
@@ -366,14 +577,26 @@ def aggregate(
 
     obs_df = gpd.read_file(obs_shp_fp).set_crs(geo_df.crs, allow_override=True)
 
+    # -----------
+    logger.info("Joining geopandas dataframes...")
+    start = time.time()
     joined_df = gpd.sjoin(geo_df, obs_df, how="inner", predicate="intersects")
+    joined_df.reset_index(inplace=True)
+    end = time.time()
+    logger.info(
+        f"Geopandas dataframes joining took {(end - start) / 60:.2f} min")
+    # -----------
 
-    weight_col = "aggregator_datetime_weight"
+    time_weight_col = "aggregator_datetime_weight"
     time_period_col = "aggregator_datetime"
 
     if time_agg is None:
         group_by_ids = [geo_id, ]
     else:
+        # -----------
+        logger.info("Annotating with time periods...")
+        start = time.time()
+
         start_time_col = f"{time_start_id}_datetime"
         end_time_col = f"{time_end_id}_datetime"
         joined_df[start_time_col] = pd.to_datetime(joined_df[time_start_id], format=time_id_format)
@@ -384,38 +607,47 @@ def aggregate(
                 joined_df,
                 start_time_col, end_time_col,
                 time_period_col,
-                weight_col
+                time_weight_col
             )
         elif time_agg == "MONTHLY":
             joined_df = annotate_months(
                 joined_df,
                 start_time_col, end_time_col,
                 time_period_col,
-                weight_col)
+                time_weight_col)
 
         elif time_agg == "ANNUAL":
             joined_df = annotate_years(
                 joined_df,
                 start_time_col, end_time_col,
                 time_period_col,
-                weight_col)
+                time_weight_col)
         else:
             raise NotImplementedError(
                 f"Not implemented time aggregation type '{time_agg}'")
 
+        end = time.time()
+        logger.info(
+            f"'{time_agg}' time annotation took {(end-start)/60:.2f} min")
+        # -----------
         group_by_ids = [geo_id, time_period_col]
 
+    # -----------
+    logger.info("Aggregating...")
+    start = time.time()
     if agg_type == "MAX":
         aggregated_df = aggregate_max(
-            joined_df, group_by_ids, geo_adds, obs_id)
+            joined_df, group_by_ids, geo_adds, obs_ids)
 
-    # elif agg_type == "AVG_MONTE_CARLO":
-    #     return aggregate_avg_MC(joined_df)
+    elif agg_type == "AVG_MONTE_CARLO":
+        return aggregate_avg_MC(
+            joined_df, obs_df, group_by_ids, geo_adds, obs_ids,
+            n, max_error, time_agg, time_weight_col)
 
     elif agg_type == "AVG_AREA_WEIGHTED":
         aggregated_df = aggregate_avg_weighted(
-            joined_df, group_by_ids, geo_adds, obs_id, obs_df, epsg,
-            time_agg, weight_col
+            joined_df, group_by_ids, geo_adds, obs_ids, obs_df, epsg,
+            time_agg, time_weight_col
         )
 
     else:
@@ -423,8 +655,22 @@ def aggregate(
             f"Not implemented type of aggregation: '{agg_type}', "
             f"implement it yourself")
 
+    end = time.time()
+    logger.info(
+        f"'{agg_type}' aggregation took {(end - start) / 60:.2f} min")
+    # -----------
+
+    # -----------
+    logger.info("Filling with 0 missed areas of observation...")
+    start = time.time()
     # assign 0 to areas without observations
     full_df = fill_with_0(aggregated_df, geo_df, geo_id)
+
+    end = time.time()
+    logger.info(
+        f"'fill_with_0 took {(end - start) / 60:.2f} min")
+    # -----------
+
     return full_df
 
 
@@ -478,7 +724,9 @@ def parse_options():
         'Attention! '
         'In this code some technical columns are added to datasets '
         'with names starting from "aggregator_". '
-        'Do not use such column names in input files to avoid interference!')
+        'Do not use such column names in input files to avoid interference!',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
 
     # =================================================================
     # Geographical shape file
@@ -490,7 +738,6 @@ def parse_options():
         type=str
     )
 
-    # TODO: if geometry?
     geo_group.add_argument(
         '--geo-id',
         help="The name of the identifier column of the geographic region",
@@ -515,7 +762,7 @@ def parse_options():
     )
 
     obs_group.add_argument(
-        '--obs-id',
+        '--obs-ids',
         help="The name(s) of the value column for observational shapes",
         nargs="+",
         type=str
@@ -526,7 +773,8 @@ def parse_options():
 
     agg_group.add_argument(
         '--agg-type',
-        help="Aggregation type: MAX|AVG_AREA_WEIGHTED",
+        help="Aggregation type",
+        choices=["MAX", "AVG_AREA_WEIGHTED", "AVG_MONTE_CARLO"],
         type=str
     )
 
@@ -537,13 +785,27 @@ def parse_options():
         default=5070
     )
 
+    agg_group.add_argument(
+        '--n',
+        help="Number of subsamples for error estimation of MC approximation",
+        type=int,
+        default=500
+    )
+
+    agg_group.add_argument(
+        '--max-error',
+        help="Max estimated relative error of MC approximation",
+        type=float
+    )
+
     # =================================================================
     # Time aggregation
     time_group = parser.add_argument_group('Time aggregation parameters')
 
     time_group.add_argument(
         '--time-agg',
-        help="Time aggregation type if required: DAILY|MONTHLY|ANNUAL",
+        help="Time aggregation type if required",
+        choices=["DAILY", "MONTHLY", "ANNUAL"],
         type=str
     )
 
@@ -578,6 +840,18 @@ def parse_options():
         type=str
     )
 
+    # =================================================================
+    # Logging options
+    log_group = parser.add_argument_group('Logging options')
+
+    log_group.add_argument(
+        '--log-level',
+        default="INFO",
+        choices=logging._nameToLevel.keys(),
+        help="Logging level",
+        type=str
+    )
+
     options = parser.parse_args()
 
     return options
@@ -588,28 +862,31 @@ def main(
     geo_id,
     geo_add,
     obs_shp,
-    obs_id,
+    obs_ids,
     agg_type,
     time_agg,
     time_start_id,
     time_end_id,
     time_id_format,
     epsg,
-    out_csv
+    out_csv,
+    n,
+    max_error
 ):
-    # aggregate
     aggregated_df = aggregate(
         geo_shp,
         geo_id,
         geo_add,
         obs_shp,
-        obs_id,
+        obs_ids,
         agg_type,
         time_agg,
         time_start_id,
         time_end_id,
         time_id_format,
-        epsg
+        epsg,
+        n,
+        max_error
     )
 
     # write out
@@ -617,35 +894,32 @@ def main(
     
     
 if __name__ == "__main__":
+    opts = parse_options()
+
+    # logging settings
     handler = colorlog.StreamHandler()
     handler.setFormatter(colorlog.ColoredFormatter(
         '%(log_color)s%(levelname)s:%(message)s'))
-
+    level = logging.getLevelName(opts.log_level)
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         handlers=[handler])
-
     logger = logging.getLogger()
 
-    opts = parse_options()
-
+    # run aggregator
     main(
         opts.geo_shp,
         opts.geo_id,
         opts.geo_add,
         opts.obs_shp,
-        opts.obs_id,
+        opts.obs_ids,
         opts.agg_type,
         opts.time_agg,
         opts.time_start_id,
         opts.time_end_id,
         opts.time_id_format,
         opts.epsg,
-        opts.out_csv
+        opts.out_csv,
+        opts.n,
+        opts.max_error
     )
-
-
-"""
-obs_shp_fp = "/mnt/c/Users/kseniya.petrova/projs/nsaph-gis-data/hms_smoke20220401/hms_smoke20220401.shp"
-geo_shp_fp = "/mnt/c/Users/kseniya.petrova/projs/nsaph-gis-data/cb_2018_us_county_500k/cb_2018_us_county_500k.shp"
-"""

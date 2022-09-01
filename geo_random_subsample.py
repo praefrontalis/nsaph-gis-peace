@@ -1,5 +1,5 @@
 """
-Сделать рандомную подвыборку из гео-файла
+Random subsample from geo-shape file
 """
 import argparse
 
